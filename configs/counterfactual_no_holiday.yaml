@@ -1,0 +1,35 @@
+paths:
+  data_dir: data
+  results_dir: results
+  legacy_output_dir: outputs
+
+model:
+  beta0: 0.04
+  beta_multiplier:
+    I: 1.0
+    II: 1.0
+    III: 1.0
+    IV: 1.0
+  susceptibility:
+    "0-18": 1.0
+    "19-49": 1.0
+    "50-64": 1.0
+    "65+": 1.0
+  reinfection_susceptibility_scale: 0.7
+  latent_period_days: 2.0
+  infectious_period_days: 5.0
+  waning_rate_per_day: 0.005
+  infection_update: probability
+  enable_reinfection: true
+
+counterfactual:
+  no_holiday: true
+  no_cross_region: false
+  no_reinfection: false
+
+run:
+  mode: calendar
+  run_name: counterfactual_no_holiday
+  fixed_regime: I
+  days: 180
+  create_plots: true

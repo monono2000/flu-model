@@ -1,0 +1,14 @@
+{
+  "score": 1.8087297203648471,
+  "beta0": 0.04,
+  "same_prevalence": 0.0005,
+  "beta_multiplier": {
+    "I": 0.8,
+    "II": 1.0,
+    "III": 1.2,
+    "IV": 1.0
+  },
+  "compare_start_date": "2025-11-03",
+  "compare_end_date": "2026-02-23",
+  "note": "관측 CSV는 2025-W36~2026-W16의 주간 연령별 발병률로 해석했고, 비교 구간은 calibration 실행 시 지정한 주차 창을 사용했다. 관측치는 surveillance rate, 모델은 simulated infection episode rate이므로 shape 중심 비교로 보정했다."
+}

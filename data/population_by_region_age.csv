@@ -1,0 +1,9 @@
+region,age_group,population
+Region_A,0-18,1098911
+Region_A,19-49,4151588
+Region_A,50-64,2134796
+Region_A,65+,1918834
+Region_B,0-18,54787
+Region_B,19-49,142180
+Region_B,50-64,92214
+Region_B,65+,74488

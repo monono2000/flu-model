@@ -1,0 +1,45 @@
+paths:
+  data_dir: data
+  results_dir: results
+  legacy_output_dir: outputs
+
+model:
+  beta0: 1.0
+  beta_multiplier:
+    I: 0.04
+    II: 0.055
+    III: 0.055
+    IV: 0.06
+  susceptibility:
+    "0-18": 1.0
+    "19-49": 1.0
+    "50-64": 1.0
+    "65+": 1.0
+  reinfection_susceptibility_scale: 0.0
+  latent_period_days: 2.0
+  infectious_period_days: 5.0
+  waning_rate_per_day: 0.0
+  infection_update: probability
+  enable_reinfection: false
+
+initial_conditions:
+  mode: legacy_equal_absolute
+  seed_compartment: I
+  legacy_equal_absolute: 100.0
+
+counterfactual:
+  no_holiday: false
+  no_cross_region: false
+  no_reinfection: true
+
+legacy:
+  write_legacy_outputs: true
+  scenario_order: [I, II, IV]
+
+run:
+  mode: legacy_batch
+  run_name: legacy_batch
+  fixed_regime: I
+  days: 180
+  create_plots: true
+

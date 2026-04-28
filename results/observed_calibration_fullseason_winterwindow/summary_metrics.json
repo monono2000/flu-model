@@ -1,0 +1,53 @@
+{
+  "peak_day_by_region": {
+    "Seoul": "initial_state",
+    "Wonju": "initial_state"
+  },
+  "peak_value_by_region": {
+    "Seoul": {
+      "active_infected": 2791.2387,
+      "active_infected_per_100k": 29.999999999999996
+    },
+    "Wonju": {
+      "active_infected": 109.10069999999999,
+      "active_infected_per_100k": 29.999999999999996
+    }
+  },
+  "overall_peak_day": "initial_state",
+  "overall_peak_value": {
+    "active_infected": 2900.3394,
+    "active_infected_per_100k": 29.999999999999996
+  },
+  "cumulative_ever_infected_rate_by_region_age": {
+    "Seoul_0_18": 0.0061846129086340846,
+    "Seoul_19_49": 0.002968411225540652,
+    "Seoul_50_64": 0.002754963005111206,
+    "Seoul_65_plus": 0.002941320992789802,
+    "Wonju_0_18": 0.006184612908634183,
+    "Wonju_19_49": 0.002968411225540847,
+    "Wonju_50_64": 0.002754963005111464,
+    "Wonju_65_plus": 0.002941320992789698
+  },
+  "cumulative_episode_rate_by_region_age": {
+    "Seoul_0_18": 0.006187340681707714,
+    "Seoul_19_49": 0.002969086246111429,
+    "Seoul_50_64": 0.0027555577997877513,
+    "Seoul_65_plus": 0.0029420200900927736,
+    "Wonju_0_18": 0.006187340681707812,
+    "Wonju_19_49": 0.0029690862461116243,
+    "Wonju_50_64": 0.002755557799788009,
+    "Wonju_65_plus": 0.002942020090092669
+  },
+  "reinfection_share": 0.0003023205835126585,
+  "cross_region_flow_share_total": 0.0034838188591112787,
+  "elderly_burden_summary": {
+    "elderly_population": 1993322.0,
+    "elderly_peak_day": "initial_state",
+    "elderly_peak_active_infected": 597.9966,
+    "elderly_peak_active_infected_per_100k": 29.999999999999996,
+    "elderly_ever_infected_rate": 0.002941320992789798,
+    "elderly_episode_rate": 0.0029420200900927697,
+    "elderly_reinfection_share": 0.0002376249249029541,
+    "elderly_episode_share_of_total": 0.20230697288017502
+  }
+}

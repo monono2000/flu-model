@@ -1,0 +1,17 @@
+paths:
+  data_dir: data
+  results_dir: results
+  legacy_output_dir: outputs
+
+counterfactual:
+  no_holiday: false
+  no_cross_region: false
+  no_reinfection: true
+
+run:
+  mode: fixed
+  run_name: counterfactual_no_reinfection
+  fixed_regime: II
+  days: 180
+  create_plots: true
+
