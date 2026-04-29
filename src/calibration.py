@@ -15,6 +15,7 @@ from .constants import AGE_GROUPS
 from .data_loader import load_inputs
 from .metrics import build_simulation_tables, save_tables
 from .observations import filter_weekly_window, load_observed_influenza_weekly, melt_weekly_rates
+from .result_layout import ensure_output_layout, write_run_manifest
 from .simulation import run_simulation
 
 
@@ -219,21 +220,20 @@ def save_calibration_outputs(
     run_dir: str | Path,
     best_record: dict,
 ) -> None:
-    run_dir = Path(run_dir)
-    run_dir.mkdir(parents=True, exist_ok=True)
+    layout = ensure_output_layout(run_dir)
 
     result = best_record["result"]
     tables = build_simulation_tables(result)
-    save_tables(tables, run_dir)
-    save_config(best_record["config"], run_dir / "calibrated_config.yaml")
-    best_record["observed_long"].to_csv(run_dir / "target_weekly_long.csv", index=False, encoding="utf-8-sig")
-    best_record["model_long"].to_csv(run_dir / "model_weekly_long.csv", index=False, encoding="utf-8-sig")
+    save_tables(tables, layout.root)
+    save_config(best_record["config"], layout.meta_dir / "calibrated_config.yaml")
+    best_record["observed_long"].to_csv(layout.tables_dir / "target_weekly_long.csv", index=False, encoding="utf-8-sig")
+    best_record["model_long"].to_csv(layout.tables_dir / "model_weekly_long.csv", index=False, encoding="utf-8-sig")
     comparison = best_record["observed_long"].merge(
         best_record["model_long"],
         on=["week_start", "age_group"],
         how="inner",
     )
-    comparison.to_csv(run_dir / "target_vs_model_weekly.csv", index=False, encoding="utf-8-sig")
+    comparison.to_csv(layout.tables_dir / "target_vs_model_weekly.csv", index=False, encoding="utf-8-sig")
     summary = {
         "is_synthetic_target": True,
         "score": best_record["score"],
@@ -255,7 +255,29 @@ def save_calibration_outputs(
             "shape 중심 비교로 보정했다."
         ),
     }
-    (run_dir / "calibration_summary.json").write_text(
+    (layout.meta_dir / "calibration_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2),
         encoding="utf-8",
+    )
+    write_run_manifest(
+        layout,
+        run_type="calibration",
+        primary_files={
+            "config": "meta/calibrated_config.yaml",
+            "summary": "meta/calibration_summary.json",
+            "simulation_summary": "meta/summary_metrics.json",
+            "target_weekly": "tables/target_weekly_long.csv",
+            "model_weekly": "tables/model_weekly_long.csv",
+            "comparison": "tables/target_vs_model_weekly.csv",
+        },
+        extra_sections={
+            "tables": {
+                "overall_daily_metrics": "tables/overall_daily_metrics.csv",
+                "node_daily_metrics": "tables/node_daily_metrics.csv",
+                "states_long": "tables/states_long.csv",
+                "flow_long": "tables/flow_long.csv",
+                "region_daily_metrics": "tables/region_daily_metrics.csv",
+                "age_group_summary": "tables/age_group_summary.csv",
+            },
+        },
     )

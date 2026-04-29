@@ -9,8 +9,8 @@ def main() -> int:
     if len(sys.argv) == 1:
         return cli_main(
             argv=[],
-            default_config_path="configs/legacy.yaml",
-            default_mode="legacy_batch",
+            default_config_path="configs/calendar_dec_feb_shape_detailed_compare_initial_conditions.yaml",
+            default_mode="calendar",
         )
     return cli_main(sys.argv[1:])
 

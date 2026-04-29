@@ -7,7 +7,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .constants import AGE_GROUPS, AGE_TOKEN_MAP, NODE_ORDER, REGIONS
+from .constants import AGE_GROUPS, AGE_TOKEN_MAP, REGION_DISPLAY_NAMES
+from .result_layout import ensure_output_layout, write_run_manifest
 from .simulation import SimulationResult
 
 
@@ -19,6 +20,8 @@ class SimulationTables:
     flow_long: pd.DataFrame
     summary_metrics: dict
     region_daily_metrics: pd.DataFrame
+    region_group_daily_metrics: pd.DataFrame
+    region_group_final_summary: pd.DataFrame
     age_group_summary: pd.DataFrame
 
 
@@ -29,6 +32,8 @@ def build_simulation_tables(result: SimulationResult) -> SimulationTables:
     flow_long = build_flow_long(result)
     summary_metrics = build_summary_metrics(result)
     region_daily_metrics = build_region_daily_metrics(result)
+    region_group_daily_metrics = build_region_group_daily_metrics(result)
+    region_group_final_summary = build_region_group_final_summary(result)
     age_group_summary = build_age_group_summary(result)
     return SimulationTables(
         states_long=states_long,
@@ -37,17 +42,20 @@ def build_simulation_tables(result: SimulationResult) -> SimulationTables:
         flow_long=flow_long,
         summary_metrics=summary_metrics,
         region_daily_metrics=region_daily_metrics,
+        region_group_daily_metrics=region_group_daily_metrics,
+        region_group_final_summary=region_group_final_summary,
         age_group_summary=age_group_summary,
     )
 
 
 def build_states_long(result: SimulationResult) -> pd.DataFrame:
     rows: list[dict] = []
+    regions = result.regions
     active_history = result.state_history["I0"] + result.state_history["I1"]
     susceptible_history = result.state_history["S0"] + result.state_history["S1"]
 
     for time_idx, label in enumerate(result.state_labels):
-        for region_idx, region in enumerate(REGIONS):
+        for region_idx, region in enumerate(regions):
             for age_idx, age_group in enumerate(AGE_GROUPS):
                 row = {
                     "date_or_day": label,
@@ -70,12 +78,13 @@ def build_states_long(result: SimulationResult) -> pd.DataFrame:
 
 def build_node_daily_metrics(result: SimulationResult) -> pd.DataFrame:
     rows: list[dict] = []
+    regions = result.regions
     active_history = result.state_history["I0"][1:] + result.state_history["I1"][1:]
     cumulative_first = result.population[np.newaxis, :, :] - result.state_history["S0"][1:]
     cumulative_reinfection = np.cumsum(result.new_reinfections, axis=0)
 
     for time_idx, label in enumerate(result.daily_labels):
-        for region_idx, region in enumerate(REGIONS):
+        for region_idx, region in enumerate(regions):
             for age_idx, age_group in enumerate(AGE_GROUPS):
                 population = result.population[region_idx, age_idx]
                 new_first = float(result.new_first_infections[time_idx, region_idx, age_idx])
@@ -113,6 +122,8 @@ def build_overall_daily_metrics(result: SimulationResult) -> pd.DataFrame:
 
     total_new_first = result.new_first_infections.sum(axis=(1, 2))
     total_new_reinfection = result.new_reinfections.sum(axis=(1, 2))
+    total_cumulative_first = cumulative_first.sum(axis=(1, 2))
+    total_cumulative_reinfection = cumulative_reinfection.sum(axis=(1, 2))
     total_active = active_history.sum(axis=(1, 2))
     total_recovered = result.state_history["R"][1:].sum(axis=(1, 2))
     total_flow = result.flow_total.sum(axis=(1, 2, 3, 4))
@@ -137,9 +148,19 @@ def build_overall_daily_metrics(result: SimulationResult) -> pd.DataFrame:
         rows.append(
             {
                 "date_or_day": label,
+                "time_beta_multiplier": float(result.daily_time_beta_multipliers[time_idx]),
+                "effective_beta_multiplier": float(
+                    result.daily_time_beta_multipliers[time_idx]
+                    * result.config.model.beta_multiplier[result.daily_regimes[time_idx]]
+                ),
                 "total_new_first_infections": float(total_new_first[time_idx]),
                 "total_new_reinfections": float(total_new_reinfection[time_idx]),
                 "total_new_infections": total_new,
+                "cumulative_first_infections": float(total_cumulative_first[time_idx]),
+                "cumulative_reinfections": float(total_cumulative_reinfection[time_idx]),
+                "cumulative_total_infection_episodes": float(
+                    total_cumulative_first[time_idx] + total_cumulative_reinfection[time_idx]
+                ),
                 "total_active_infected": float(total_active[time_idx]),
                 "total_active_infected_per_100k": safe_rate(total_active[time_idx], total_population, scale=100000.0),
                 "total_recovered": float(total_recovered[time_idx]),
@@ -158,10 +179,11 @@ def build_overall_daily_metrics(result: SimulationResult) -> pd.DataFrame:
 
 def build_flow_long(result: SimulationResult) -> pd.DataFrame:
     rows: list[dict] = []
+    regions = result.regions
     for time_idx, label in enumerate(result.daily_labels):
-        for source_region_idx, source_region in enumerate(REGIONS):
+        for source_region_idx, source_region in enumerate(regions):
             for source_age_idx, source_age_group in enumerate(AGE_GROUPS):
-                for target_region_idx, target_region in enumerate(REGIONS):
+                for target_region_idx, target_region in enumerate(regions):
                     for target_age_idx, target_age_group in enumerate(AGE_GROUPS):
                         rows.append(
                             {
@@ -203,6 +225,7 @@ def build_flow_long(result: SimulationResult) -> pd.DataFrame:
 
 
 def build_summary_metrics(result: SimulationResult) -> dict:
+    regions = result.regions
     active_history = result.state_history["I0"] + result.state_history["I1"]
     cumulative_first_final = result.population - result.state_history["S0"][-1]
     cumulative_reinfection_final = np.cumsum(result.new_reinfections, axis=0)[-1] if result.new_reinfections.size else np.zeros_like(result.population)
@@ -211,7 +234,7 @@ def build_summary_metrics(result: SimulationResult) -> dict:
     region_population = result.population.sum(axis=1)
     peak_day_by_region = {}
     peak_value_by_region = {}
-    for region_idx, region in enumerate(REGIONS):
+    for region_idx, region in enumerate(regions):
         region_active = active_history[:, region_idx, :].sum(axis=1)
         peak_idx = int(np.argmax(region_active))
         peak_day_by_region[region] = result.state_labels[peak_idx]
@@ -232,7 +255,7 @@ def build_summary_metrics(result: SimulationResult) -> dict:
 
     cumulative_ever_rate = {}
     cumulative_episode_rate = {}
-    for region_idx, region in enumerate(REGIONS):
+    for region_idx, region in enumerate(regions):
         for age_idx, age_group in enumerate(AGE_GROUPS):
             node_id = f"{region}_{AGE_TOKEN_MAP[age_group]}"
             population = result.population[region_idx, age_idx]
@@ -282,13 +305,14 @@ def build_summary_metrics(result: SimulationResult) -> dict:
 
 
 def build_region_daily_metrics(result: SimulationResult) -> pd.DataFrame:
+    regions = result.regions
     active_history = result.state_history["I0"][1:] + result.state_history["I1"][1:]
     cumulative_first = result.population[np.newaxis, :, :] - result.state_history["S0"][1:]
     cumulative_reinfection = np.cumsum(result.new_reinfections, axis=0)
 
     rows: list[dict] = []
     for time_idx, label in enumerate(result.daily_labels):
-        for region_idx, region in enumerate(REGIONS):
+        for region_idx, region in enumerate(regions):
             population = float(result.population[region_idx].sum())
             new_first = float(result.new_first_infections[time_idx, region_idx, :].sum())
             new_reinf = float(result.new_reinfections[time_idx, region_idx, :].sum())
@@ -302,6 +326,9 @@ def build_region_daily_metrics(result: SimulationResult) -> pd.DataFrame:
                     "new_first_infections": new_first,
                     "new_reinfections": new_reinf,
                     "new_infections_total": new_first + new_reinf,
+                    "cumulative_first_infections": cum_first,
+                    "cumulative_reinfections": cum_reinf,
+                    "cumulative_total_infection_episodes": cum_first + cum_reinf,
                     "active_infected": active,
                     "active_infected_per_100k": safe_rate(active, population, scale=100000.0),
                     "ever_infected_rate": safe_rate(cum_first, population),
@@ -309,6 +336,70 @@ def build_region_daily_metrics(result: SimulationResult) -> pd.DataFrame:
                     "reinfection_share": safe_rate(new_reinf, new_first + new_reinf),
                 }
             )
+    return pd.DataFrame(rows)
+
+
+def build_region_group_daily_metrics(result: SimulationResult) -> pd.DataFrame:
+    group_order = list(dict.fromkeys(result.region_groups))
+    active_history = result.state_history["I0"][1:] + result.state_history["I1"][1:]
+    cumulative_first = result.population[np.newaxis, :, :] - result.state_history["S0"][1:]
+    cumulative_reinfection = np.cumsum(result.new_reinfections, axis=0)
+
+    rows: list[dict] = []
+    for time_idx, label in enumerate(result.daily_labels):
+        for group in group_order:
+            indices = [idx for idx, value in enumerate(result.region_groups) if value == group]
+            display_group = REGION_DISPLAY_NAMES.get(group, group)
+            population = float(result.population[indices, :].sum())
+            new_first = float(result.new_first_infections[time_idx, indices, :].sum())
+            new_reinf = float(result.new_reinfections[time_idx, indices, :].sum())
+            active = float(active_history[time_idx, indices, :].sum())
+            cum_first = float(cumulative_first[time_idx, indices, :].sum())
+            cum_reinf = float(cumulative_reinfection[time_idx, indices, :].sum())
+            rows.append(
+                {
+                    "date_or_day": label,
+                    "group": display_group,
+                    "new_first_infections": new_first,
+                    "new_reinfections": new_reinf,
+                    "new_infections_total": new_first + new_reinf,
+                    "cumulative_first_infections": cum_first,
+                    "cumulative_reinfections": cum_reinf,
+                    "cumulative_total_infection_episodes": cum_first + cum_reinf,
+                    "active_infected": active,
+                    "active_infected_per_100k": safe_rate(active, population, scale=100000.0),
+                    "ever_infected_rate": safe_rate(cum_first, population),
+                    "infection_episode_rate": safe_rate(cum_first + cum_reinf, population),
+                    "reinfection_share": safe_rate(new_reinf, new_first + new_reinf),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def build_region_group_final_summary(result: SimulationResult) -> pd.DataFrame:
+    group_daily = build_region_group_daily_metrics(result)
+    rows: list[dict] = []
+    for group in group_daily["group"].drop_duplicates().tolist():
+        subset = group_daily[group_daily["group"] == group].reset_index(drop=True)
+        peak_idx = int(subset["active_infected"].idxmax())
+        peak_row = subset.iloc[peak_idx]
+        final_row = subset.iloc[-1]
+        rows.append(
+            {
+                "group": group,
+                "peak_day": peak_row["date_or_day"],
+                "peak_active_infected": float(peak_row["active_infected"]),
+                "peak_active_infected_per_100k": float(peak_row["active_infected_per_100k"]),
+                "final_new_infections": float(final_row["new_infections_total"]),
+                "final_active_infected": float(final_row["active_infected"]),
+                "final_active_infected_per_100k": float(final_row["active_infected_per_100k"]),
+                "final_cumulative_first_infections": float(final_row["cumulative_first_infections"]),
+                "final_cumulative_reinfections": float(final_row["cumulative_reinfections"]),
+                "final_cumulative_total_infection_episodes": float(final_row["cumulative_total_infection_episodes"]),
+                "final_ever_infected_rate": float(final_row["ever_infected_rate"]),
+                "final_infection_episode_rate": float(final_row["infection_episode_rate"]),
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -334,48 +425,46 @@ def build_age_group_summary(result: SimulationResult) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def summarize_legacy_city(result: SimulationResult, region: str) -> dict:
-    region_idx = REGIONS.index(region)
-    active_history = result.state_history["I0"][:, region_idx, :] + result.state_history["I1"][:, region_idx, :]
-    region_active_total = active_history.sum(axis=1)
-    region_population = float(result.population[region_idx].sum())
-    peak_idx = int(np.argmax(region_active_total))
-
-    cumulative_first_final = result.population[region_idx] - result.state_history["S0"][-1, region_idx]
-    cumulative_total = float(cumulative_first_final.sum())
-    elderly_share = safe_rate(cumulative_first_final[-1], cumulative_total, scale=100.0)
-
-    return {
-        "peak_day": peak_idx,
-        "peak_I_per_100k": safe_rate(region_active_total[peak_idx], region_population, scale=100000.0),
-        "cumulative_rate_total": safe_rate(cumulative_total, region_population, scale=100.0),
-        "cumulative_rate_by_age": np.divide(
-            cumulative_first_final,
-            result.population[region_idx],
-            out=np.zeros_like(cumulative_first_final),
-            where=result.population[region_idx] > 0.0,
-        )
-        * 100.0,
-        "elderly_share": elderly_share,
-    }
-
-
 def save_tables(tables: SimulationTables, run_dir: Path) -> None:
-    run_dir.mkdir(parents=True, exist_ok=True)
-    tables.states_long.to_csv(run_dir / "states_long.csv", index=False, encoding="utf-8-sig")
-    tables.node_daily_metrics.to_csv(run_dir / "node_daily_metrics.csv", index=False, encoding="utf-8-sig")
-    tables.overall_daily_metrics.to_csv(run_dir / "overall_daily_metrics.csv", index=False, encoding="utf-8-sig")
-    tables.flow_long.to_csv(run_dir / "flow_long.csv", index=False, encoding="utf-8-sig")
-    (run_dir / "summary_metrics.json").write_text(
+    layout = ensure_output_layout(run_dir)
+    tables.states_long.to_csv(layout.tables_dir / "states_long.csv", index=False, encoding="utf-8-sig")
+    tables.node_daily_metrics.to_csv(layout.tables_dir / "node_daily_metrics.csv", index=False, encoding="utf-8-sig")
+    tables.overall_daily_metrics.to_csv(layout.tables_dir / "overall_daily_metrics.csv", index=False, encoding="utf-8-sig")
+    tables.flow_long.to_csv(layout.tables_dir / "flow_long.csv", index=False, encoding="utf-8-sig")
+    tables.region_daily_metrics.to_csv(layout.tables_dir / "region_daily_metrics.csv", index=False, encoding="utf-8-sig")
+    tables.region_group_daily_metrics.to_csv(layout.tables_dir / "region_group_daily_metrics.csv", index=False, encoding="utf-8-sig")
+    tables.region_group_final_summary.to_csv(layout.tables_dir / "region_group_final_summary.csv", index=False, encoding="utf-8-sig")
+    tables.age_group_summary.to_csv(layout.tables_dir / "age_group_summary.csv", index=False, encoding="utf-8-sig")
+    (layout.meta_dir / "summary_metrics.json").write_text(
         json.dumps(tables.summary_metrics, ensure_ascii=False, indent=2),
         encoding="utf-8",
+    )
+    write_run_manifest(
+        layout,
+        run_type="simulation",
+        primary_files={
+            "config": "meta/config_used.yaml",
+            "summary": "meta/summary_metrics.json",
+            "overall_daily_metrics": "tables/overall_daily_metrics.csv",
+            "node_daily_metrics": "tables/node_daily_metrics.csv",
+        },
+        extra_sections={
+            "tables": {
+                "states_long": "tables/states_long.csv",
+                "flow_long": "tables/flow_long.csv",
+                "region_daily_metrics": "tables/region_daily_metrics.csv",
+                "region_group_daily_metrics": "tables/region_group_daily_metrics.csv",
+                "region_group_final_summary": "tables/region_group_final_summary.csv",
+                "age_group_summary": "tables/age_group_summary.csv",
+            },
+        },
     )
 
 
 def compute_cross_region_flow(flow_total: np.ndarray) -> np.ndarray:
     cross_region_flow = np.zeros(flow_total.shape[0], dtype=float)
-    for source_region_idx in range(len(REGIONS)):
-        for target_region_idx in range(len(REGIONS)):
+    for source_region_idx in range(flow_total.shape[1]):
+        for target_region_idx in range(flow_total.shape[3]):
             if source_region_idx == target_region_idx:
                 continue
             cross_region_flow += flow_total[:, source_region_idx, :, target_region_idx, :].sum(axis=(1, 2))
@@ -389,4 +478,3 @@ def safe_rate(numerator: float | np.ndarray, denominator: float | np.ndarray, sc
         out=np.zeros_like(np.asarray(numerator, dtype=float), dtype=float),
         where=np.asarray(denominator, dtype=float) > 0.0,
     ) * scale
-

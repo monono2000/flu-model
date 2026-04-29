@@ -2,19 +2,22 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
-from .config import SimulationConfig
 from .constants import AGE_GROUPS, LEGACY_SCENARIOS, REGIONS
 from .data_loader import LoadedInputs
-from .metrics import summarize_legacy_city
+from .metrics import safe_rate
 from .plotting import save_grouped_bar_chart_image, save_line_chart_image
 from .simulation import SimulationResult, run_simulation
 
+if TYPE_CHECKING:
+    from .config import SimulationConfig
 
-def run_legacy_batch(config: SimulationConfig, inputs: LoadedInputs) -> Path:
+
+def run_legacy_batch(config: "SimulationConfig", inputs: LoadedInputs) -> Path:
     output_dir = config.paths.legacy_output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -46,7 +49,7 @@ def build_legacy_summary_table(scenario_results: dict[str, SimulationResult]) ->
     for region in REGIONS:
         for scenario in scenario_results:
             result = scenario_results[scenario]
-            summary = summarize_legacy_city(result, region)
+            summary = summarize_legacy_region(result, region)
             rows.append(
                 {
                     "City": region,
@@ -106,8 +109,8 @@ def plot_total_infectious_legacy(scenario_results: dict[str, SimulationResult], 
 
 def plot_age_cumulative_legacy(scenario_results: dict[str, SimulationResult], output_dir: Path) -> None:
     for scenario, result in scenario_results.items():
-        region_a_summary = summarize_legacy_city(result, "Region_A")
-        region_b_summary = summarize_legacy_city(result, "Region_B")
+        region_a_summary = summarize_legacy_region(result, "Region_A")
+        region_b_summary = summarize_legacy_region(result, "Region_B")
         save_grouped_bar_chart_image(
             output_path=output_dir / f"age_cumulative_{scenario}.png",
             title=f"Legacy Fixed Regime {scenario}: Age-specific cumulative infection rate",
@@ -119,3 +122,29 @@ def plot_age_cumulative_legacy(scenario_results: dict[str, SimulationResult], ou
             y_label="Cumulative infection rate (%)",
             highlight_last_category=True,
         )
+
+
+def summarize_legacy_region(result: SimulationResult, region: str) -> dict:
+    region_idx = REGIONS.index(region)
+    active_history = result.state_history["I0"][:, region_idx, :] + result.state_history["I1"][:, region_idx, :]
+    region_active_total = active_history.sum(axis=1)
+    region_population = float(result.population[region_idx].sum())
+    peak_idx = int(np.argmax(region_active_total))
+
+    cumulative_first_final = result.population[region_idx] - result.state_history["S0"][-1, region_idx]
+    cumulative_total = float(cumulative_first_final.sum())
+    elderly_share = safe_rate(cumulative_first_final[-1], cumulative_total, scale=100.0)
+
+    return {
+        "peak_day": peak_idx,
+        "peak_I_per_100k": safe_rate(region_active_total[peak_idx], region_population, scale=100000.0),
+        "cumulative_rate_total": safe_rate(cumulative_total, region_population, scale=100.0),
+        "cumulative_rate_by_age": np.divide(
+            cumulative_first_final,
+            result.population[region_idx],
+            out=np.zeros_like(cumulative_first_final),
+            where=result.population[region_idx] > 0.0,
+        )
+        * 100.0,
+        "elderly_share": elderly_share,
+    }

@@ -7,6 +7,12 @@ from typing import Any
 import yaml
 
 from .constants import AGE_GROUPS, LEGACY_SCENARIOS, REGIMES
+from .legacy_compat import (
+    ALL_RUN_MODES,
+    LEGACY_RUN_MODE,
+    STANDARD_INITIAL_CONDITION_MODES,
+    normalize_initial_condition_payload,
+)
 
 
 def _default_beta_multiplier() -> dict[str, float]:
@@ -67,6 +73,17 @@ class SusceptibilityCsvConfig:
     preseason_start_date: str = "2025-09-01"
     preseason_end_date: str = "2025-11-24"
     normalize_to: str = "mean"
+    power: float = 1.0
+
+
+@dataclass
+class TimeBetaCsvConfig:
+    enabled: bool = False
+    source_csv: str = ""
+    encoding: str = "cp949"
+    normalize_to: str = "mean"
+    age_weighting: str = "population"
+    power: float = 1.0
 
 
 @dataclass
@@ -75,6 +92,7 @@ class ModelConfig:
     beta_multiplier: dict[str, float] = field(default_factory=_default_beta_multiplier)
     susceptibility: dict[str, float] = field(default_factory=_default_susceptibility)
     susceptibility_from_csv: SusceptibilityCsvConfig = field(default_factory=SusceptibilityCsvConfig)
+    time_beta_from_csv: TimeBetaCsvConfig = field(default_factory=TimeBetaCsvConfig)
     reinfection_susceptibility_scale: float = 1.0
     latent_period_days: float = 2.0
     infectious_period_days: float = 5.0
@@ -89,7 +107,7 @@ class InitialConditionConfig:
     seed_compartment: str = "I"
     same_prevalence: float = 1.0e-4
     same_prevalence_by_age: dict[str, float] = field(default_factory=dict)
-    legacy_equal_absolute: float = 100.0
+    equal_seed_count: float = 100.0
     seed_by_region_age: dict[str, dict[str, float]] = field(default_factory=_default_seed_by_region_age)
 
 
@@ -113,6 +131,7 @@ class RunConfig:
     fixed_regime: str = "I"
     days: int = 180
     create_plots: bool = True
+    compare_initial_conditions: bool = False
 
 
 @dataclass
@@ -133,42 +152,61 @@ class SimulationConfig:
             self.model.waning_rate_per_day = 0.0
 
     def validate(self) -> None:
-        if self.run.mode not in {"fixed", "calendar", "legacy_batch"}:
-            raise ValueError(f"지원하지 않는 run.mode입니다: {self.run.mode}")
-        if self.run.fixed_regime not in REGIMES:
-            raise ValueError(f"지원하지 않는 fixed regime입니다: {self.run.fixed_regime}")
+        if self.run.mode not in ALL_RUN_MODES:
+            raise ValueError(f"Unsupported run.mode: {self.run.mode}")
+        if self.run.mode in {LEGACY_RUN_MODE, "fixed"} and self.run.fixed_regime not in REGIMES:
+            raise ValueError(f"Unsupported fixed regime: {self.run.fixed_regime}")
         if self.model.infection_update not in {"probability", "linear"}:
+            raise ValueError("model.infection_update must be 'probability' or 'linear'.")
+        if self.initial_conditions.mode not in STANDARD_INITIAL_CONDITION_MODES:
             raise ValueError(
-                "model.infection_update는 'probability' 또는 'linear' 여야 합니다."
-            )
-        if self.initial_conditions.mode not in {
-            "same_prevalence",
-            "seoul_seed",
-            "legacy_equal_absolute",
-        }:
-            raise ValueError(
-                "initial_conditions.mode는 same_prevalence / seoul_seed / legacy_equal_absolute 중 하나여야 합니다."
+                "initial_conditions.mode must be one of: "
+                "same_prevalence, seed_by_region_age, equal_seed, equal_absolute_seed."
             )
         if self.initial_conditions.seed_compartment not in {"E", "I"}:
-            raise ValueError("initial_conditions.seed_compartment는 E 또는 I 여야 합니다.")
+            raise ValueError("initial_conditions.seed_compartment must be 'E' or 'I'.")
+        if self.initial_conditions.equal_seed_count < 0.0:
+            raise ValueError("initial_conditions.equal_seed_count must be non-negative.")
         if self.model.latent_period_days <= 0 or self.model.infectious_period_days <= 0:
-            raise ValueError("latent_period_days와 infectious_period_days는 0보다 커야 합니다.")
+            raise ValueError("latent_period_days and infectious_period_days must be positive.")
         if any(regime not in self.model.beta_multiplier for regime in REGIMES):
-            raise ValueError("beta_multiplier는 I, II, III, IV를 모두 포함해야 합니다.")
+            raise ValueError("beta_multiplier must provide values for I, II, III, and IV.")
         if any(age_group not in self.model.susceptibility for age_group in AGE_GROUPS):
-            raise ValueError("susceptibility는 4개 연령집단을 모두 포함해야 합니다.")
+            raise ValueError("susceptibility must provide values for all four age groups.")
+        self._validate_susceptibility_csv()
+        self._validate_time_beta_csv()
+
+    def _validate_susceptibility_csv(self) -> None:
         csv_config = self.model.susceptibility_from_csv
-        if csv_config.enabled:
-            if not csv_config.source_csv:
-                raise ValueError("model.susceptibility_from_csv.source_csv는 필수입니다.")
-            if csv_config.metric not in {"mean", "peak", "preseason_ratio"}:
-                raise ValueError(
-                    "model.susceptibility_from_csv.metric은 mean / peak / preseason_ratio 중 하나여야 합니다."
-                )
-            if csv_config.normalize_to not in {"mean", *AGE_GROUPS}:
-                raise ValueError(
-                    "model.susceptibility_from_csv.normalize_to는 mean 또는 4개 연령집단 중 하나여야 합니다."
-                )
+        if not csv_config.enabled:
+            return
+        if not csv_config.source_csv:
+            raise ValueError("model.susceptibility_from_csv.source_csv is required when enabled.")
+        if csv_config.metric not in {"mean", "peak", "preseason_ratio"}:
+            raise ValueError(
+                "model.susceptibility_from_csv.metric must be one of: mean, peak, preseason_ratio."
+            )
+        if csv_config.normalize_to not in {"mean", *AGE_GROUPS}:
+            raise ValueError(
+                "model.susceptibility_from_csv.normalize_to must be 'mean' or one of the four age groups."
+            )
+        if csv_config.power <= 0.0:
+            raise ValueError("model.susceptibility_from_csv.power must be positive.")
+
+    def _validate_time_beta_csv(self) -> None:
+        csv_config = self.model.time_beta_from_csv
+        if not csv_config.enabled:
+            return
+        if self.run.mode != "calendar":
+            raise ValueError("model.time_beta_from_csv can only be used with calendar mode.")
+        if not csv_config.source_csv:
+            raise ValueError("model.time_beta_from_csv.source_csv is required when enabled.")
+        if csv_config.normalize_to not in {"mean", "max"}:
+            raise ValueError("model.time_beta_from_csv.normalize_to must be 'mean' or 'max'.")
+        if csv_config.age_weighting not in {"population", "equal"}:
+            raise ValueError("model.time_beta_from_csv.age_weighting must be 'population' or 'equal'.")
+        if csv_config.power <= 0.0:
+            raise ValueError("model.time_beta_from_csv.power must be positive.")
 
 
 def load_config(config_path: str | Path, project_root: str | Path | None = None) -> SimulationConfig:
@@ -177,14 +215,20 @@ def load_config(config_path: str | Path, project_root: str | Path | None = None)
     default_payload = asdict(SimulationConfig())
     user_payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     merged = _deep_merge(default_payload, user_payload)
+
+    initial_condition_payload = normalize_initial_condition_payload(merged["initial_conditions"])
     model_payload = dict(merged["model"])
     model_payload["susceptibility_from_csv"] = SusceptibilityCsvConfig(
         **model_payload.get("susceptibility_from_csv", {})
     )
+    model_payload["time_beta_from_csv"] = TimeBetaCsvConfig(
+        **model_payload.get("time_beta_from_csv", {})
+    )
+
     config = SimulationConfig(
         paths=PathsConfig(**merged["paths"]),
         model=ModelConfig(**model_payload),
-        initial_conditions=InitialConditionConfig(**merged["initial_conditions"]),
+        initial_conditions=InitialConditionConfig(**initial_condition_payload),
         counterfactual=CounterfactualConfig(**merged["counterfactual"]),
         legacy=LegacyConfig(**merged["legacy"]),
         run=RunConfig(**merged["run"]),
@@ -240,6 +284,7 @@ def _apply_susceptibility_from_csv(config: SimulationConfig, project_root: Path)
         preseason_start_date=csv_config.preseason_start_date,
         preseason_end_date=csv_config.preseason_end_date,
         normalize_to=csv_config.normalize_to,
+        power=csv_config.power,
     )
 
 

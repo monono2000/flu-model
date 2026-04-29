@@ -32,7 +32,7 @@ def test_source_target_flow_consistency(tmp_path):
 def test_region_a_seed_isolation_sanity(tmp_path):
     config = build_test_config(tmp_path, mode="fixed", days=20, regime="I")
     config.counterfactual.no_cross_region = True
-    config.initial_conditions.mode = "seoul_seed"
+    config.initial_conditions.mode = "seed_by_region_age"
     config.initial_conditions.seed_by_region_age = {
         "Region_A": {
             "0-18": 100.0,

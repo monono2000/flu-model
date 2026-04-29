@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .config import ModelConfig
-from .constants import AGE_GROUPS, REGIONS
+from .constants import AGE_GROUPS
 from .flow_decomposition import decompose_daily_flows
 
 
@@ -80,7 +80,12 @@ def prepare_regime_matrices(age_matrix: np.ndarray, region_matrix: np.ndarray) -
     )
 
 
-def create_initial_state(population: np.ndarray, mode_config) -> StateVector:
+def create_initial_state(
+    population: np.ndarray,
+    mode_config,
+    regions: tuple[str, ...],
+    region_groups: tuple[str, ...] | None = None,
+) -> StateVector:
     population = sanitize_array(population)
     initial_seed = np.zeros_like(population)
 
@@ -93,13 +98,19 @@ def create_initial_state(population: np.ndarray, mode_config) -> StateVector:
             dtype=float,
         )
         initial_seed = population * age_prevalence[np.newaxis, :]
-    elif mode_config.mode == "seoul_seed":
-        for region_idx, region in enumerate(REGIONS):
+    elif mode_config.mode == "seed_by_region_age":
+        for region_idx, region in enumerate(regions):
             age_payload = mode_config.seed_by_region_age.get(region, {})
             for age_idx, age_group in enumerate(AGE_GROUPS):
                 initial_seed[region_idx, age_idx] = float(age_payload.get(age_group, 0.0))
-    elif mode_config.mode == "legacy_equal_absolute":
-        initial_seed = np.full_like(population, float(mode_config.legacy_equal_absolute))
+    elif mode_config.mode == "equal_seed":
+        initial_seed = np.full_like(population, float(mode_config.equal_seed_count))
+    elif mode_config.mode == "equal_absolute_seed":
+        initial_seed = build_group_equal_seed(
+            population=population,
+            equal_seed_count=float(mode_config.equal_seed_count),
+            group_labels=region_groups or regions,
+        )
     else:
         raise ValueError(f"지원하지 않는 초기조건 모드입니다: {mode_config.mode}")
 
@@ -116,18 +127,41 @@ def create_initial_state(population: np.ndarray, mode_config) -> StateVector:
     return StateVector(S0=S0, E0=E0, I0=I0, R=zeros.copy(), S1=zeros.copy(), E1=zeros.copy(), I1=zeros.copy())
 
 
+def build_group_equal_seed(
+    population: np.ndarray,
+    equal_seed_count: float,
+    group_labels: tuple[str, ...],
+) -> np.ndarray:
+    if len(group_labels) != population.shape[0]:
+        raise ValueError("group_labels length must match the population region axis.")
+
+    initial_seed = np.zeros_like(population)
+    unique_groups = tuple(dict.fromkeys(group_labels))
+    for age_idx in range(population.shape[1]):
+        for group in unique_groups:
+            indices = [idx for idx, label in enumerate(group_labels) if label == group]
+            group_population = float(population[indices, age_idx].sum())
+            if group_population <= 0.0:
+                continue
+            initial_seed[indices, age_idx] = (
+                equal_seed_count * population[indices, age_idx] / group_population
+            )
+    return initial_seed
+
+
 def step_model(
     state: StateVector,
     population: np.ndarray,
     regime_matrices: PreparedRegimeMatrices,
     model_config: ModelConfig,
     regime: str,
+    time_beta_multiplier: float = 1.0,
 ) -> StepResult:
     susceptibility = np.array(
         [model_config.susceptibility[age_group] for age_group in AGE_GROUPS],
         dtype=float,
     )
-    beta_multiplier = float(model_config.beta_multiplier[regime])
+    beta_multiplier = float(model_config.beta_multiplier[regime]) * float(time_beta_multiplier)
     lambda_values, raw_contrib = compute_force_of_infection(
         state=state,
         population=population,
@@ -269,4 +303,3 @@ def enforce_population_conservation(state: StateVector, population: np.ndarray) 
     if not np.allclose(total, population, atol=1.0e-8):
         raise ValueError("상태 갱신 후 총인구 보존이 깨졌습니다.")
     return StateVector(**payload)
-

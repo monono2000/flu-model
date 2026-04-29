@@ -19,6 +19,11 @@ REGION_INDEX = {region: idx for idx, region in enumerate(REGIONS)}
 AGE_INDEX = {age_group: idx for idx, age_group in enumerate(AGE_GROUPS)}
 NODE_INDEX = {node_id: idx for idx, node_id in enumerate(NODE_IDS)}
 
+REGION_DISPLAY_NAMES = {
+    "Region_A": "Seoul",
+    "Region_B": "Wonju",
+}
+
 REGIME_COLORS = {
     "I": "#4c78a8",
     "II": "#f58518",

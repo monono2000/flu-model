@@ -17,11 +17,12 @@ def derive_age_susceptibility_from_csv(
     preseason_start_date: str = "2025-09-01",
     preseason_end_date: str = "2025-11-24",
     normalize_to: str = "mean",
+    power: float = 1.0,
 ) -> dict[str, float]:
     weekly_df = load_observed_influenza_weekly(weekly_csv_path, encoding=encoding)
     window_df = filter_weekly_window(weekly_df, start_date=start_date, end_date=end_date)
     if window_df.empty:
-        raise ValueError("susceptibility 계산 구간에 해당하는 주간 데이터가 없습니다.")
+        raise ValueError("No weekly rows were found in the requested susceptibility window.")
 
     if metric == "mean":
         raw_values = _series_from_window(window_df, reducer="mean")
@@ -34,22 +35,21 @@ def derive_age_susceptibility_from_csv(
             end_date=preseason_end_date,
         )
         if preseason_df.empty:
-            raise ValueError("preseason_ratio 계산용 기준 구간 데이터가 없습니다.")
+            raise ValueError("No weekly rows were found in the preseason comparison window.")
         preseason_mean = _series_from_window(preseason_df, reducer="mean")
         winter_mean = _series_from_window(window_df, reducer="mean")
         raw_values = winter_mean.divide(preseason_mean.where(preseason_mean > 0.0))
     else:
-        raise ValueError(f"지원하지 않는 susceptibility metric입니다: {metric}")
+        raise ValueError(f"Unsupported susceptibility metric: {metric}")
 
     raw_values = raw_values.astype(float)
-    if normalize_to == "mean":
-        baseline = float(raw_values.mean())
-    else:
-        baseline = float(raw_values[normalize_to])
+    baseline = float(raw_values.mean()) if normalize_to == "mean" else float(raw_values[normalize_to])
     if baseline <= 0.0:
-        raise ValueError("susceptibility 정규화 기준값이 0보다 커야 합니다.")
+        raise ValueError("The susceptibility normalization baseline must be positive.")
 
     normalized = raw_values / baseline
+    if power != 1.0:
+        normalized = normalized.pow(power)
     return {age_group: float(normalized[age_group]) for age_group in AGE_GROUPS}
 
 
@@ -59,4 +59,4 @@ def _series_from_window(window_df: pd.DataFrame, reducer: str) -> pd.Series:
         return age_df.mean(axis=0)
     if reducer == "max":
         return age_df.max(axis=0)
-    raise ValueError(f"지원하지 않는 reducer입니다: {reducer}")
+    raise ValueError(f"Unsupported reducer: {reducer}")

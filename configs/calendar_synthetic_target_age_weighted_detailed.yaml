@@ -2,6 +2,7 @@ paths:
   data_dir: data
   results_dir: results
   legacy_output_dir: outputs
+  population_file: population_by_region_age_detailed.csv
 
 model:
   beta0: 0.04
@@ -15,10 +16,18 @@ model:
     "19-49": 1.0
     "50-64": 1.0
     "65+": 1.0
+  susceptibility_from_csv:
+    enabled: true
+    source_csv: data/synthetic_target_influenza_2025_2026.csv
+    encoding: utf-8
+    start_date: "2025-12-01"
+    end_date: "2026-02-23"
+    metric: mean
+    normalize_to: mean
   reinfection_susceptibility_scale: 0.7
   latent_period_days: 2.0
   infectious_period_days: 5.0
-  waning_rate_per_day: 0.0
+  waning_rate_per_day: 0.005
   infection_update: probability
   enable_reinfection: true
 
@@ -26,23 +35,6 @@ initial_conditions:
   mode: same_prevalence
   seed_compartment: I
   same_prevalence: 0.0001
-  same_prevalence_by_age:
-    "0-18": 0.0001
-    "19-49": 0.0001
-    "50-64": 0.0001
-    "65+": 0.0001
-  equal_seed_count: 100.0
-  seed_by_region_age:
-    Region_A:
-      "0-18": 100.0
-      "19-49": 100.0
-      "50-64": 100.0
-      "65+": 100.0
-    Region_B:
-      "0-18": 0.0
-      "19-49": 0.0
-      "50-64": 0.0
-      "65+": 0.0
 
 counterfactual:
   no_holiday: false
@@ -54,8 +46,8 @@ legacy:
   scenario_order: [I, II, IV]
 
 run:
-  mode: fixed
-  run_name: fixed_period_I_baseline
+  mode: calendar
+  run_name: winter_calendar_synthetic_target_age_weighted_detailed
   fixed_regime: I
   days: 180
   create_plots: true

@@ -9,6 +9,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .constants import AGE_GROUPS, REGIME_COLORS, REGIONS
 from .metrics import SimulationTables
+from .result_layout import ensure_output_layout, update_manifest_sections
+from .seasonality import aggregate_model_daily_to_weekly, derive_overall_weekly_curve_from_csv
 from .simulation import SimulationResult
 
 
@@ -20,11 +22,28 @@ SERIES_COLORS = ["#c0392b", "#1f77b4", "#2ca02c", "#9467bd", "#ff7f0e", "#17becf
 
 
 def create_all_plots(result: SimulationResult, tables: SimulationTables, run_dir: Path) -> None:
-    plot_timeseries_overview(tables, run_dir)
-    plot_region_comparison(tables, run_dir)
-    plot_age_group_comparison(tables, run_dir)
-    plot_regime_timeline(result, run_dir)
-    create_network_snapshots(result, run_dir)
+    layout = ensure_output_layout(run_dir)
+    plot_timeseries_overview(tables, layout.plots_dir)
+    plot_growth_summary(result, tables, layout.plots_dir)
+    plot_region_comparison(result, tables, layout.plots_dir)
+    plot_age_group_comparison(tables, layout.plots_dir)
+    plot_regime_timeline(result, layout.plots_dir)
+    plot_seasonality_comparison(result, tables, layout.plots_dir)
+    create_network_snapshots(result, layout.root)
+    update_manifest_sections(
+        layout,
+        sections={
+            "tables": {
+                "states_long": "tables/states_long.csv",
+                "flow_long": "tables/flow_long.csv",
+                "region_daily_metrics": "tables/region_daily_metrics.csv",
+                "region_group_daily_metrics": "tables/region_group_daily_metrics.csv",
+                "region_group_final_summary": "tables/region_group_final_summary.csv",
+                "age_group_summary": "tables/age_group_summary.csv",
+            },
+            "plots": _existing_plot_entries(layout),
+        },
+    )
 
 
 def save_line_chart_image(
@@ -82,7 +101,7 @@ def plot_timeseries_overview(tables: SimulationTables, run_dir: Path) -> None:
     _draw_line_chart(
         draw,
         rects[0],
-        "?꾩껜 ?좉퇋 媛먯뿼",
+        "Total new infections",
         x_values,
         [("new infections", overall["total_new_infections"].to_numpy(dtype=float), SERIES_COLORS[0])],
         "Count",
@@ -91,7 +110,7 @@ def plot_timeseries_overview(tables: SimulationTables, run_dir: Path) -> None:
     _draw_line_chart(
         draw,
         rects[1],
-        "?꾩껜 ?쒖꽦 媛먯뿼",
+        "Total active infected",
         x_values,
         [("active infected", overall["total_active_infected"].to_numpy(dtype=float), SERIES_COLORS[1])],
         "Count",
@@ -100,7 +119,7 @@ def plot_timeseries_overview(tables: SimulationTables, run_dir: Path) -> None:
     _draw_line_chart(
         draw,
         rects[2],
-        "?꾩껜 ?뚮났 ?곹깭??,
+        "Recovered",
         x_values,
         [("recovered", overall["total_recovered"].to_numpy(dtype=float), SERIES_COLORS[2])],
         "Count",
@@ -109,7 +128,7 @@ def plot_timeseries_overview(tables: SimulationTables, run_dir: Path) -> None:
     _draw_line_chart(
         draw,
         rects[3],
-        "?쇱씪 ?ш컧??鍮꾩쨷",
+        "Daily reinfection share",
         x_values,
         [("reinfection share", reinfection_share, SERIES_COLORS[3])],
         "Share",
@@ -118,26 +137,198 @@ def plot_timeseries_overview(tables: SimulationTables, run_dir: Path) -> None:
     image.save(run_dir / "timeseries_overview.png")
 
 
-def plot_region_comparison(tables: SimulationTables, run_dir: Path) -> None:
+def plot_region_comparison(result: SimulationResult, tables: SimulationTables, run_dir: Path) -> None:
+    group_df = tables.region_group_daily_metrics
+    unique_groups = group_df["group"].drop_duplicates().tolist()
+    if len(unique_groups) == 2:
+        image = Image.new("RGB", (1360, 1080), BACKGROUND)
+        draw = ImageDraw.Draw(image)
+        rects = _panel_layout((1360, 1080), rows=3, cols=1, margin=40, gap=24)
+
+        series_active = []
+        series_ever = []
+        series_reinf = []
+        x_values = np.arange(1, len(group_df[group_df["group"] == unique_groups[0]]) + 1)
+        group_colors = {"Seoul": SERIES_COLORS[0], "Wonju": SERIES_COLORS[1]}
+        for group in unique_groups:
+            subset = group_df[group_df["group"] == group].reset_index(drop=True)
+            color = group_colors.get(group, SERIES_COLORS[len(series_active) % len(SERIES_COLORS)])
+            series_active.append((group, subset["active_infected_per_100k"].to_numpy(dtype=float), color))
+            series_ever.append((group, subset["ever_infected_rate"].to_numpy(dtype=float), color))
+            series_reinf.append((group, subset["reinfection_share"].to_numpy(dtype=float), color))
+
+        _draw_line_chart(draw, rects[0], "Seoul vs Wonju | active infected per 100k", x_values, series_active, "per 100k", "Day")
+        _draw_line_chart(draw, rects[1], "Seoul vs Wonju | ever infected rate", x_values, series_ever, "Rate", "Day")
+        _draw_line_chart(draw, rects[2], "Seoul vs Wonju | reinfection share", x_values, series_reinf, "Share", "Day")
+        image.save(run_dir / "region_comparison.png")
+        return
+
     region_df = tables.region_daily_metrics
     image = Image.new("RGB", (1360, 1080), BACKGROUND)
     draw = ImageDraw.Draw(image)
     rects = _panel_layout((1360, 1080), rows=3, cols=1, margin=40, gap=24)
 
+    region_totals = result.population.sum(axis=1)
+    ranked_indices = np.argsort(region_totals)[::-1]
+    selected_indices = ranked_indices[: min(10, len(result.regions))]
+    selected_regions = [result.regions[idx] for idx in selected_indices]
+
     series_active = []
     series_ever = []
     series_reinf = []
-    for color, region in zip(["#1f77b4", "#c0392b"], REGIONS):
+    x_values = np.arange(1, len(region_df[region_df["region"] == selected_regions[0]]) + 1)
+    for idx, region in enumerate(selected_regions):
         subset = region_df[region_df["region"] == region].reset_index(drop=True)
-        x_values = np.arange(1, len(subset) + 1)
-        series_active.append((region, subset["active_infected_per_100k"].to_numpy(dtype=float), color))
-        series_ever.append((region, subset["ever_infected_rate"].to_numpy(dtype=float), color))
-        series_reinf.append((region, subset["reinfection_share"].to_numpy(dtype=float), color))
+        color = SERIES_COLORS[idx % len(SERIES_COLORS)]
+        label = _compact_region_label(region)
+        series_active.append((label, subset["active_infected_per_100k"].to_numpy(dtype=float), color))
+        series_ever.append((label, subset["ever_infected_rate"].to_numpy(dtype=float), color))
+        series_reinf.append((label, subset["reinfection_share"].to_numpy(dtype=float), color))
 
-    _draw_line_chart(draw, rects[0], "?쒖슱 vs ?먯＜ ?쒖꽦 媛먯뿼??(per 100k)", x_values, series_active, "per 100k", "Day")
-    _draw_line_chart(draw, rects[1], "?쒖슱 vs ?먯＜ ever infected rate", x_values, series_ever, "Rate", "Day")
-    _draw_line_chart(draw, rects[2], "?쒖슱 vs ?먯＜ ?쇱씪 ?ш컧??鍮꾩쨷", x_values, series_reinf, "Share", "Day")
+    title_suffix = "Top regions by population" if len(result.regions) > len(selected_regions) else "All regions"
+    _draw_line_chart(draw, rects[0], f"Regional active infected per 100k | {title_suffix}", x_values, series_active, "per 100k", "Day")
+    _draw_line_chart(draw, rects[1], f"Regional ever infected rate | {title_suffix}", x_values, series_ever, "Rate", "Day")
+    _draw_line_chart(draw, rects[2], f"Regional reinfection share | {title_suffix}", x_values, series_reinf, "Share", "Day")
     image.save(run_dir / "region_comparison.png")
+
+
+def plot_growth_summary(result: SimulationResult, tables: SimulationTables, run_dir: Path) -> None:
+    overall = tables.overall_daily_metrics
+    group_df = tables.region_group_daily_metrics
+    group_final = tables.region_group_final_summary
+    image = Image.new("RGB", (1400, 900), BACKGROUND)
+    draw = ImageDraw.Draw(image)
+    rects = _panel_layout((1400, 900), rows=2, cols=2, margin=40, gap=24)
+
+    unique_groups = group_df["group"].drop_duplicates().tolist()
+    if len(unique_groups) == 2:
+        x_values = np.arange(1, len(overall) + 1)
+        group_colors = {"Seoul": SERIES_COLORS[0], "Wonju": SERIES_COLORS[1]}
+
+        series_cumulative = []
+        series_active = []
+        for group in unique_groups:
+            subset = group_df[group_df["group"] == group].reset_index(drop=True)
+            color = group_colors.get(group, SERIES_COLORS[len(series_cumulative) % len(SERIES_COLORS)])
+            series_cumulative.append((group, subset["cumulative_total_infection_episodes"].to_numpy(dtype=float), color))
+            series_active.append((group, subset["active_infected_per_100k"].to_numpy(dtype=float), color))
+
+        _draw_line_chart(
+            draw,
+            rects[0],
+            "Seoul vs Wonju | cumulative infection episodes",
+            x_values,
+            series_cumulative,
+            "Count",
+            "Day",
+        )
+        _draw_line_chart(
+            draw,
+            rects[1],
+            "Seoul vs Wonju | active infected per 100k",
+            x_values,
+            series_active,
+            "per 100k",
+            "Day",
+        )
+
+        summary_categories = group_final["group"].tolist()
+        _draw_grouped_bar_chart(
+            draw,
+            rects[2],
+            "Final cumulative infection episodes",
+            summary_categories,
+            [("episodes", group_final["final_cumulative_total_infection_episodes"].to_numpy(dtype=float), "#c0392b")],
+            "Count",
+        )
+        _draw_grouped_bar_chart(
+            draw,
+            rects[3],
+            "Final infection episode rate",
+            summary_categories,
+            [("episode rate", group_final["final_infection_episode_rate"].to_numpy(dtype=float), "#1f77b4")],
+            "Rate",
+        )
+        image.save(run_dir / "growth_summary.png")
+        return
+
+    region_df = tables.region_daily_metrics
+    x_values = np.arange(1, len(overall) + 1)
+    cumulative_total = overall["cumulative_total_infection_episodes"].to_numpy(dtype=float)
+    cumulative_first = overall["cumulative_first_infections"].to_numpy(dtype=float)
+    cumulative_reinfection = overall["cumulative_reinfections"].to_numpy(dtype=float)
+    _draw_line_chart(
+        draw,
+        rects[0],
+        "Cumulative infection growth",
+        x_values,
+        [
+            ("total episodes", cumulative_total, SERIES_COLORS[0]),
+            ("first infections", cumulative_first, SERIES_COLORS[1]),
+            ("reinfections", cumulative_reinfection, SERIES_COLORS[3]),
+        ],
+        "Count",
+        "Day",
+    )
+
+    final_region_df = region_df.groupby("region", as_index=False).tail(1).copy()
+    region_population = {
+        region: float(result.population[idx].sum())
+        for idx, region in enumerate(result.regions)
+    }
+    final_region_df["population"] = final_region_df["region"].map(region_population)
+    final_region_df["cumulative_total_per_100k"] = (
+        final_region_df["cumulative_total_infection_episodes"].to_numpy(dtype=float)
+        / final_region_df["population"].to_numpy(dtype=float)
+        * 100000.0
+    )
+
+    top_count = min(12, len(final_region_df))
+    top_by_count = (
+        final_region_df.sort_values("cumulative_total_infection_episodes", ascending=False)
+        .head(top_count)
+        .reset_index(drop=True)
+    )
+    count_categories = [_compact_region_label(region) for region in top_by_count["region"].tolist()]
+    _draw_grouped_bar_chart(
+        draw,
+        rects[1],
+        "Final cumulative infection episodes | top regions",
+        count_categories,
+        [("episodes", top_by_count["cumulative_total_infection_episodes"].to_numpy(dtype=float), "#c0392b")],
+        "Count",
+    )
+
+    top_by_rate = (
+        final_region_df.sort_values("cumulative_total_per_100k", ascending=False)
+        .head(top_count)
+        .reset_index(drop=True)
+    )
+    rate_categories = [_compact_region_label(region) for region in top_by_rate["region"].tolist()]
+    _draw_grouped_bar_chart(
+        draw,
+        rects[2],
+        "Final cumulative episodes per 100k | top regions",
+        rate_categories,
+        [("per 100k", top_by_rate["cumulative_total_per_100k"].to_numpy(dtype=float), "#1f77b4")],
+        "per 100k",
+    )
+
+    top_by_active = (
+        final_region_df.sort_values("active_infected_per_100k", ascending=False)
+        .head(top_count)
+        .reset_index(drop=True)
+    )
+    active_categories = [_compact_region_label(region) for region in top_by_active["region"].tolist()]
+    _draw_grouped_bar_chart(
+        draw,
+        rects[3],
+        "Final active infected per 100k | top regions",
+        active_categories,
+        [("active per 100k", top_by_active["active_infected_per_100k"].to_numpy(dtype=float), "#2ca02c")],
+        "per 100k",
+    )
+    image.save(run_dir / "growth_summary.png")
 
 
 def plot_age_group_comparison(tables: SimulationTables, run_dir: Path) -> None:
@@ -153,7 +344,7 @@ def plot_age_group_comparison(tables: SimulationTables, run_dir: Path) -> None:
     _draw_grouped_bar_chart(
         draw,
         rects[0],
-        "?곕졊吏묐떒蹂??꾩쟻 ever infected rate",
+        "Age-group ever infected rate",
         categories,
         [("ever", ever_values, "#3b82f6")],
         "Rate",
@@ -162,7 +353,7 @@ def plot_age_group_comparison(tables: SimulationTables, run_dir: Path) -> None:
     _draw_grouped_bar_chart(
         draw,
         rects[1],
-        "?곕졊吏묐떒蹂??꾩쟻 infection episode rate",
+        "Age-group infection episode rate",
         categories,
         [("episode", episode_values, "#ef4444")],
         "Rate",
@@ -198,12 +389,95 @@ def plot_regime_timeline(result: SimulationResult, run_dir: Path) -> None:
         start_idx = end_idx
 
     draw.rectangle([band_left, band_top, band_right, band_bottom], outline=AXIS_COLOR, width=1)
-    draw.text((40, 170), "x異뺤? ?쒕??덉씠???쒖꽌 湲곗? day index", fill=TEXT_COLOR, font=label_font)
+    draw.text((40, 170), "x-axis uses the simulation day index", fill=TEXT_COLOR, font=label_font)
     image.save(run_dir / "regime_timeline.png")
 
 
+def plot_seasonality_comparison(result: SimulationResult, tables: SimulationTables, run_dir: Path) -> None:
+    csv_config = result.config.model.time_beta_from_csv
+    if not csv_config.enabled:
+        return
+
+    csv_path = Path(csv_config.source_csv)
+    if not csv_path.is_absolute():
+        project_candidate = (Path.cwd() / csv_path).resolve()
+        csv_path = project_candidate if project_candidate.exists() else (result.config.paths.data_dir / csv_path).resolve()
+
+    age_weights = {
+        age_group: float(result.population[:, age_idx].sum())
+        for age_idx, age_group in enumerate(AGE_GROUPS)
+    }
+    target_weekly = derive_overall_weekly_curve_from_csv(
+        weekly_csv_path=csv_path,
+        age_population_weights=age_weights,
+        encoding=csv_config.encoding,
+        age_weighting=csv_config.age_weighting,
+    )
+    model_weekly = aggregate_model_daily_to_weekly(
+        result.daily_labels,
+        tables.overall_daily_metrics["total_new_infections"].to_numpy(dtype=float),
+    )
+    total_population = float(result.population.sum())
+    model_weekly["model_per_100k"] = (
+        model_weekly["value"].to_numpy(dtype=float) / max(total_population, 1.0e-9) * 100000.0
+    )
+    merged = target_weekly.merge(model_weekly[["week_start", "model_per_100k"]], on="week_start", how="inner")
+    if merged.empty:
+        return
+
+    merged["target_peak_index"] = merged["overall_rate"].to_numpy(dtype=float) / max(
+        float(merged["overall_rate"].max()),
+        1.0e-9,
+    ) * 100.0
+    merged["model_peak_index"] = merged["model_per_100k"].to_numpy(dtype=float) / max(
+        float(merged["model_per_100k"].max()),
+        1.0e-9,
+    ) * 100.0
+
+    image = Image.new("RGB", (1400, 600), BACKGROUND)
+    draw = ImageDraw.Draw(image)
+    rects = _panel_layout((1400, 600), rows=1, cols=2, margin=40, gap=24)
+    x_week = np.arange(1, len(merged) + 1)
+    _draw_line_chart(
+        draw,
+        rects[0],
+        "Weekly target vs model curve | peak normalized = 100",
+        x_week,
+        [
+            ("target", merged["target_peak_index"].to_numpy(dtype=float), SERIES_COLORS[0]),
+            ("model", merged["model_peak_index"].to_numpy(dtype=float), SERIES_COLORS[1]),
+        ],
+        "Peak=100",
+        "Week",
+    )
+    _draw_line_chart(
+        draw,
+        rects[1],
+        "Applied time beta multiplier",
+        np.arange(1, len(tables.overall_daily_metrics) + 1),
+        [
+            (
+                "csv time beta",
+                tables.overall_daily_metrics["time_beta_multiplier"].to_numpy(dtype=float),
+                SERIES_COLORS[2],
+            ),
+            (
+                "effective beta",
+                tables.overall_daily_metrics["effective_beta_multiplier"].to_numpy(dtype=float),
+                SERIES_COLORS[3],
+            ),
+        ],
+        "Multiplier",
+        "Day",
+    )
+    image.save(run_dir / "seasonality_comparison.png")
+
+
 def create_network_snapshots(result: SimulationResult, run_dir: Path) -> None:
-    snapshot_dir = run_dir / "network_snapshots"
+    if tuple(result.regions) != REGIONS:
+        return
+    layout = ensure_output_layout(run_dir)
+    snapshot_dir = layout.snapshots_dir
     snapshot_dir.mkdir(parents=True, exist_ok=True)
 
     indices = select_snapshot_indices(result)
@@ -241,7 +515,7 @@ def create_network_snapshots(result: SimulationResult, run_dir: Path) -> None:
     if len(saved_paths) > 1:
         frames = [Image.open(path) for path in saved_paths]
         frames[0].save(
-            run_dir / "network_animation.gif",
+            layout.plots_dir / "network_animation.gif",
             save_all=True,
             append_images=frames[1:],
             duration=850,
@@ -267,7 +541,7 @@ def draw_network_snapshot(
     draw.text((40, 20), f"Network Snapshot | {label} | Regime {regime}", fill=TEXT_COLOR, font=title_font)
     draw.text(
         (40, 52),
-        "?몃뱶 ?ш린: active infected per 100k / ?몃뱶 梨꾩?: ever infected rate / ?몃뱶 ?뚮몢由? self-flow",
+        "Node size: active infected per 100k / node color: ever infected rate / border: self-flow",
         fill=TEXT_COLOR,
         font=small_font,
     )
@@ -347,8 +621,8 @@ def draw_network_snapshot(
             )
 
     _draw_color_legend(draw, (945, 110, 1010, 310), "Ever\ninfected\nrate")
-    draw.text((945, 340), "x=Region_A / Region_B 怨좎젙", fill=TEXT_COLOR, font=small_font)
-    draw.text((945, 362), "y=?곕졊 ?쒖꽌 怨좎젙", fill=TEXT_COLOR, font=small_font)
+    draw.text((945, 340), "x-axis fixed to Region_A / Region_B", fill=TEXT_COLOR, font=small_font)
+    draw.text((945, 362), "y-axis fixed to age-group order", fill=TEXT_COLOR, font=small_font)
     image.save(output_path)
 
 
@@ -635,4 +909,30 @@ def _interpolate_color(
         int(start_rgb[idx] + (end_rgb[idx] - start_rgb[idx]) * fraction)
         for idx in range(3)
     )
+
+
+def _compact_region_label(region: str) -> str:
+    if len(region) <= 16:
+        return region
+    return region[:13] + "..."
+
+
+def _existing_plot_entries(layout) -> dict[str, str]:
+    plot_entries: dict[str, str] = {}
+    expected_files = {
+        "overview": "timeseries_overview.png",
+        "growth_summary": "growth_summary.png",
+        "region_comparison": "region_comparison.png",
+        "age_group_comparison": "age_group_comparison.png",
+        "regime_timeline": "regime_timeline.png",
+        "seasonality_comparison": "seasonality_comparison.png",
+        "network_animation": "network_animation.gif",
+    }
+    for entry_name, filename in expected_files.items():
+        if (layout.plots_dir / filename).exists():
+            plot_entries[entry_name] = f"plots/{filename}"
+
+    if layout.snapshots_dir.exists() and any(layout.snapshots_dir.iterdir()):
+        plot_entries["network_snapshots"] = "plots/network_snapshots/"
+    return plot_entries
 

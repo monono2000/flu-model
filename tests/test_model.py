@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from src.data_loader import load_inputs
+from src.legacy_compat import normalize_initial_condition_payload
 from src.simulation import run_simulation
 from tests.helpers import build_test_config, write_calendar
 
@@ -70,3 +71,15 @@ def test_no_reinfection_reduction(tmp_path):
     assert np.allclose(result.state_history["E1"], 0.0)
     assert np.allclose(result.state_history["I1"], 0.0)
 
+
+def test_legacy_equal_absolute_alias_maps_to_standard_mode():
+    normalized = normalize_initial_condition_payload(
+        {
+            "mode": "legacy_equal_absolute",
+            "legacy_equal_absolute": 100.0,
+        }
+    )
+
+    assert normalized["mode"] == "equal_absolute_seed"
+    assert normalized["equal_seed_count"] == 100.0
+    assert "legacy_equal_absolute" not in normalized

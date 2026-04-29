@@ -12,6 +12,8 @@ from .constants import AGE_GROUPS, REGIMES, REGIONS
 
 @dataclass
 class LoadedInputs:
+    regions: tuple[str, ...]
+    region_groups: tuple[str, ...]
     population: np.ndarray
     age_matrices: dict[str, np.ndarray]
     region_matrices: dict[str, np.ndarray]
@@ -19,13 +21,18 @@ class LoadedInputs:
 
 
 def load_inputs(config: SimulationConfig, require_calendar: bool = False) -> LoadedInputs:
-    population = load_population(config.paths.population_path())
+    regions, region_groups, population = load_population(config.paths.population_path())
     age_matrices = {
         regime: load_square_matrix(config.paths.age_contact_path(regime), AGE_GROUPS)
         for regime in REGIMES
     }
     region_matrices = {
-        regime: load_square_matrix(config.paths.region_contact_path(regime), REGIONS)
+        regime: load_region_matrix(
+            config.paths.region_contact_path(regime),
+            regions=regions,
+            region_groups=region_groups,
+            population=population,
+        )
         for regime in REGIMES
     }
 
@@ -43,6 +50,8 @@ def load_inputs(config: SimulationConfig, require_calendar: bool = False) -> Loa
             calendar.loc[calendar["regime"] == "IV", "regime"] = "II"
 
     return LoadedInputs(
+        regions=regions,
+        region_groups=region_groups,
         population=population,
         age_matrices=age_matrices,
         region_matrices=region_matrices,
@@ -50,7 +59,7 @@ def load_inputs(config: SimulationConfig, require_calendar: bool = False) -> Loa
     )
 
 
-def load_population(path: Path) -> np.ndarray:
+def load_population(path: Path) -> tuple[tuple[str, ...], tuple[str, ...], np.ndarray]:
     if not path.exists():
         raise FileNotFoundError(f"필수 인구 파일이 없습니다: {path}")
 
@@ -60,8 +69,11 @@ def load_population(path: Path) -> np.ndarray:
     if missing_columns:
         raise ValueError(f"population_by_region_age.csv에 필요한 열이 없습니다: {sorted(missing_columns)}")
 
-    population = np.zeros((len(REGIONS), len(AGE_GROUPS)), dtype=float)
-    for region_idx, region in enumerate(REGIONS):
+    region_order = tuple(dict.fromkeys(population_df["region"].astype(str).tolist()))
+    region_groups = tuple(_region_group_for(population_df, region) for region in region_order)
+
+    population = np.zeros((len(region_order), len(AGE_GROUPS)), dtype=float)
+    for region_idx, region in enumerate(region_order):
         for age_idx, age_group in enumerate(AGE_GROUPS):
             matched = population_df[
                 (population_df["region"] == region) & (population_df["age_group"] == age_group)
@@ -72,7 +84,7 @@ def load_population(path: Path) -> np.ndarray:
                 )
             population[region_idx, age_idx] = float(matched.iloc[0]["population"])
 
-    return population
+    return region_order, region_groups, population
 
 
 def load_square_matrix(path: Path, labels: tuple[str, ...]) -> np.ndarray:
@@ -97,6 +109,64 @@ def load_square_matrix(path: Path, labels: tuple[str, ...]) -> np.ndarray:
     if np.isnan(matrix).any() or np.isinf(matrix).any():
         raise ValueError(f"행렬 파일에 NaN/Inf가 포함되어 있습니다: {path}")
     return matrix
+
+
+def load_region_matrix(
+    path: Path,
+    regions: tuple[str, ...],
+    region_groups: tuple[str, ...],
+    population: np.ndarray,
+) -> np.ndarray:
+    raw_df = pd.read_csv(path, index_col=0)
+    raw_df.index = raw_df.index.astype(str)
+    raw_df.columns = raw_df.columns.astype(str)
+
+    if set(regions).issubset(raw_df.index) and set(regions).issubset(raw_df.columns):
+        matrix_df = raw_df.loc[list(regions), list(regions)]
+        return matrix_df.astype(float).to_numpy()
+
+    coarse_groups = tuple(dict.fromkeys(region_groups))
+    if set(coarse_groups).issubset(raw_df.index) and set(coarse_groups).issubset(raw_df.columns):
+        coarse_df = raw_df.loc[list(coarse_groups), list(coarse_groups)]
+        return expand_region_matrix(
+            coarse_matrix=coarse_df.astype(float).to_numpy(),
+            coarse_groups=coarse_groups,
+            region_groups=region_groups,
+            population=population,
+        )
+
+    if len(regions) == len(REGIONS):
+        return load_square_matrix(path, REGIONS)
+    raise ValueError(f"지역 행렬 레이블을 해석할 수 없습니다: {path}")
+
+
+def expand_region_matrix(
+    coarse_matrix: np.ndarray,
+    coarse_groups: tuple[str, ...],
+    region_groups: tuple[str, ...],
+    population: np.ndarray,
+) -> np.ndarray:
+    region_totals = population.sum(axis=1)
+    group_index = {group: idx for idx, group in enumerate(coarse_groups)}
+    group_totals = {
+        group: float(
+            region_totals[[idx for idx, value in enumerate(region_groups) if value == group]].sum()
+        )
+        for group in coarse_groups
+    }
+
+    expanded = np.zeros((len(region_groups), len(region_groups)), dtype=float)
+    for source_idx, source_group in enumerate(region_groups):
+        source_weight = (
+            float(region_totals[source_idx] / group_totals[source_group])
+            if group_totals[source_group] > 0.0
+            else 0.0
+        )
+        for target_idx, target_group in enumerate(region_groups):
+            expanded[source_idx, target_idx] = (
+                coarse_matrix[group_index[source_group], group_index[target_group]] * source_weight
+            )
+    return expanded
 
 
 def load_winter_calendar(path: Path, sample_path: Path) -> pd.DataFrame:
@@ -160,3 +230,19 @@ def apply_no_cross_region(region_matrix: np.ndarray) -> np.ndarray:
             if row_idx != col_idx:
                 adjusted[row_idx, col_idx] = 0.0
     return adjusted
+
+
+def _region_group_for(population_df: pd.DataFrame, region: str) -> str:
+    if "region_group" not in population_df.columns:
+        return region
+    matched = (
+        population_df.loc[population_df["region"] == region, "region_group"]
+        .dropna()
+        .astype(str)
+        .unique()
+    )
+    if matched.size == 0:
+        return region
+    if matched.size > 1:
+        raise ValueError(f"region_group 값이 지역별로 일관되지 않습니다: {region}")
+    return str(matched[0])
